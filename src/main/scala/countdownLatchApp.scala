@@ -1,7 +1,7 @@
 package com.andyr
 import akka.actor.{ActorSystem, Props}
 import akka.routing.RoundRobinPool
-
+//this recives messages until a specific count, then it resumes and does whatever is needed after count is reached
 object CountDownLatchApp extends App {
   implicit val actorSystem = ActorSystem()
   import actorSystem._
