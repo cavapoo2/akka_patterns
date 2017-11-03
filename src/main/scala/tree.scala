@@ -6,13 +6,16 @@ import akka.util.Timeout
 import scala.util.Random
 import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 object Messages {
   case class PassItOn(slave:ActorRef)
   case object Work
-  case object Cancel
+  case class Cancel(slave:ActorRef)
+  case object AllChildrenStopped
 }
+
 
 class Watch(ceo:ActorRef) extends Actor with ActorLogging {
   import context._
@@ -24,6 +27,7 @@ class Watch(ceo:ActorRef) extends Actor with ActorLogging {
   def messages:Receive = {
     case Terminated(actor) =>
       log.info(s"Terminated $actor")
+      stop(self)
   }
    override def postStop() = log.info(s"${self.path.name} has stopped")
 }
@@ -31,6 +35,13 @@ class Watch(ceo:ActorRef) extends Actor with ActorLogging {
 class CEO extends Actor with ActorLogging {
   import Messages._
   import context._
+  import akka.pattern._
+  def killChildrenOrderly(orderedChildren: List[ActorRef]): Future[Any] = {
+    println("OK:killChildrenOrderly")
+    orderedChildren.foldLeft(Future(AllChildrenStopped))(
+      (p, child) => p.flatMap(_ => gracefulStop(child, 2 seconds).map(_ => AllChildrenStopped))
+    )
+  }
   override def preStart(): Unit = {
      log.info(s"${self.path.name} is running")
     context.actorOf(Props[MVP], "Sales")
@@ -43,7 +54,11 @@ class CEO extends Actor with ActorLogging {
     def init: Receive = {
       case PassItOn(slave) =>
         children.foreach(_ ! PassItOn(slave))
-      case Cancel
+      case Cancel =>
+        killChildrenOrderly(children.toList) pipeTo self
+      case AllChildrenStopped =>
+        log.info("AllChildrenStopped")
+        stop(self)
     }
 
   override def postStop() = log.info(s"${self.path.name} has stopped")
@@ -78,10 +93,12 @@ class Manager extends Actor with ActorLogging {
 
   override def postStop() = log.info(s"${self.path.name} has stopped")
 }
-class Slave extends Actor with ActorLogging {
+class Slave(ceo:ActorRef) extends Actor with ActorLogging {
+  import context._
   def receive = enter
   var countjobs: Int = 0
    override def preStart() ={
+     watch(ceo)
      log.info(s"${self.path.name} is running")
    }
   def enter:Receive = {
@@ -89,6 +106,9 @@ class Slave extends Actor with ActorLogging {
       countjobs = countjobs + 1
       Thread.sleep(Random.nextInt(3)*1000)
       log.info(s"Jobcount is $countjobs")
+    case Terminated(actor) =>
+      log.info(s"Terminated $actor")
+      stop(self)
   }
   override def postStop() = log.info(s"${self.path.name} has stopped")
 }
@@ -101,7 +121,7 @@ object Workers extends App {
  // implicit val timeout = Timeout(5 seconds) // needed for `?` below
   val ceo = actorSystem.actorOf(Props[CEO], "CEO")
   val watcher = actorSystem.actorOf(Props(classOf[Watch],ceo),"Watch")
-  val slave = actorSystem.actorOf(Props[Slave],"Slave")
+  val slave = actorSystem.actorOf(Props(classOf[Slave],ceo),"Slave")
   val jobs = (1 to 10).toList.map(_ => PassItOn(slave))
   jobs.foreach(job => ceo ! job)
   ceo ! Cancel
